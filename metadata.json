@@ -1,0 +1,6 @@
+{
+  "name": "CWTracker: Countdown & Alarm",
+  "description": "An application to track courseworks, exams, and other important events with a countdown timer. It also includes an alarm clock and stopwatch to help users manage their time effectively.",
+  "requestFramePermissions": [],
+  "prompt": ""
+}

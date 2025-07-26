@@ -1,0 +1,305 @@
+
+import React, { useState, createContext, useContext, useMemo, useCallback, useEffect } from 'react';
+import { HashRouter, Routes, Route, Navigate, Outlet, NavLink, useLocation } from 'react-router-dom';
+import type { Coursework, Grade, Theme } from './types';
+import { AuthPage } from './pages/AuthPage';
+import { HomePage } from './pages/HomePage';
+import { AddEventPage } from './pages/AddEventPage';
+import { AlarmPage } from './pages/AlarmPage';
+import { ProfilePage } from './pages/ProfilePage';
+import { CalendarPage } from './pages/CalendarPage';
+import { GradesPage } from './pages/GradesPage';
+import { DegreeCalculatorPage } from './pages/DegreeCalculatorPage';
+import { HomeIcon, PlusIcon, ClockIcon } from './components/Icons';
+import { auth, db } from './firebase'; 
+import { onAuthStateChanged, User } from 'firebase/auth';
+import { collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, query, where, getDocs, orderBy } from 'firebase/firestore';
+
+
+// --- CONTEXTS ---
+
+interface AuthContextType {
+  currentUser: User | null;
+  loading: boolean;
+}
+const AuthContext = createContext<AuthContextType | null>(null);
+interface AuthProviderProps { children: React.ReactNode; }
+const AuthProvider = ({ children }: AuthProviderProps) => {
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setCurrentUser(user);
+      setLoading(false);
+    });
+    return unsubscribe;
+  }, []);
+
+  const value = useMemo(() => ({ currentUser, loading }), [currentUser, loading]);
+  
+  if (loading) {
+    return (
+        <div className="flex items-center justify-center min-h-screen bg-light-bg dark:bg-brand-dark">
+            <p className="text-light-text dark:text-brand-light">Loading...</p>
+        </div>
+    );
+  }
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+};
+export const useAuth = () => {
+  const context = useContext(AuthContext);
+  if (!context) throw new Error('useAuth must be used within an AuthProvider');
+  return context;
+};
+
+interface EventContextType {
+  events: Coursework[];
+  addEvent: (event: Omit<Coursework, 'id' | 'color'>) => Promise<void>;
+  updateEvent: (event: Coursework) => Promise<void>;
+  deleteEvent: (eventId: string) => Promise<void>;
+}
+const EventContext = createContext<EventContextType | null>(null);
+interface EventProviderProps { children: React.ReactNode; }
+const EventProvider = ({ children }: EventProviderProps) => {
+  const { currentUser } = useAuth();
+  const [events, setEvents] = useState<Coursework[]>([]);
+
+  useEffect(() => {
+    if (currentUser) {
+      const q = query(collection(db, 'users', currentUser.uid, 'events'), orderBy('dueDate'));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const eventsData = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Coursework));
+        setEvents(eventsData);
+      });
+      return unsubscribe;
+    } else {
+      setEvents([]);
+    }
+  }, [currentUser]);
+
+  const addEvent = useCallback(async (event: Omit<Coursework, 'id' | 'color'>) => {
+    if (!currentUser) return;
+    const colors = ['bg-blue-400/20 border-blue-400', 'bg-purple-400/20 border-purple-400', 'bg-green-400/20 border-green-400', 'bg-teal-400/20 border-teal-400', 'bg-indigo-400/20 border-indigo-400'];
+    const newEvent = { ...event, color: colors[Math.floor(Math.random() * colors.length)] };
+    await addDoc(collection(db, 'users', currentUser.uid, 'events'), newEvent);
+  }, [currentUser]);
+
+  const updateEvent = useCallback(async (updatedEvent: Coursework) => {
+    if (!currentUser) return;
+    const { id, ...eventData } = updatedEvent;
+    await updateDoc(doc(db, 'users', currentUser.uid, 'events', id), eventData);
+  }, [currentUser]);
+
+  const deleteEvent = useCallback(async (eventId: string) => {
+    if (!currentUser) return;
+    await deleteDoc(doc(db, 'users', currentUser.uid, 'events', eventId));
+  }, [currentUser]);
+
+  const value = useMemo(() => ({ events, addEvent, updateEvent, deleteEvent }), [events, addEvent, updateEvent, deleteEvent]);
+  return <EventContext.Provider value={value}>{children}</EventContext.Provider>;
+};
+export const useEvents = () => {
+  const context = useContext(EventContext);
+  if (!context) throw new Error('useEvents must be used within an EventProvider');
+  return context;
+};
+
+interface GradesContextType {
+  grades: Grade[];
+  addGrade: (grade: Omit<Grade, 'id'>) => Promise<void>;
+  upsertGrade: (gradeData: { moduleName: string; marks: number }) => Promise<void>;
+  updateGrade: (updatedGrade: Grade) => Promise<void>;
+  deleteGrade: (id: string) => Promise<void>;
+}
+const GradesContext = createContext<GradesContextType | null>(null);
+interface GradesProviderProps { children: React.ReactNode; }
+const GradesProvider = ({ children }: GradesProviderProps) => {
+    const { currentUser } = useAuth();
+    const [grades, setGrades] = useState<Grade[]>([]);
+
+    useEffect(() => {
+        if (currentUser) {
+            const q = query(collection(db, 'users', currentUser.uid, 'grades'), orderBy('moduleName'));
+            const unsubscribe = onSnapshot(q, (snapshot) => {
+                const gradesData = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Grade));
+                setGrades(gradesData);
+            });
+            return unsubscribe;
+        } else {
+            setGrades([]);
+        }
+    }, [currentUser]);
+
+    const addGrade = useCallback(async (grade: Omit<Grade, 'id'>) => {
+        if (!currentUser) return;
+        await addDoc(collection(db, 'users', currentUser.uid, 'grades'), grade);
+    }, [currentUser]);
+
+    const upsertGrade = useCallback(async (gradeData: { moduleName: string; marks: number }) => {
+        if (!currentUser || !gradeData.moduleName.trim()) return;
+
+        const gradesCol = collection(db, 'users', currentUser.uid, 'grades');
+        const q = query(gradesCol, where("moduleName", "==", gradeData.moduleName.trim()));
+        const querySnapshot = await getDocs(q);
+
+        if (querySnapshot.empty) {
+            await addDoc(gradesCol, gradeData);
+        } else {
+            const docToUpdate = querySnapshot.docs[0];
+            if (docToUpdate.data().marks !== gradeData.marks) {
+               await updateDoc(doc(db, 'users', currentUser.uid, 'grades', docToUpdate.id), { marks: gradeData.marks });
+            }
+        }
+    }, [currentUser]);
+
+    const updateGrade = useCallback(async (updatedGrade: Grade) => {
+        if (!currentUser) return;
+        const { id, ...gradeData } = updatedGrade;
+        await updateDoc(doc(db, 'users', currentUser.uid, 'grades', id), gradeData);
+    }, [currentUser]);
+
+    const deleteGrade = useCallback(async (id: string) => {
+        if (!currentUser) return;
+        await deleteDoc(doc(db, 'users', currentUser.uid, 'grades', id));
+    }, [currentUser]);
+
+
+    const value = useMemo(() => ({ grades, addGrade, upsertGrade, updateGrade, deleteGrade }), [grades, addGrade, upsertGrade, updateGrade, deleteGrade]);
+    return <GradesContext.Provider value={value}>{children}</GradesContext.Provider>;
+};
+export const useGrades = () => {
+    const context = useContext(GradesContext);
+    if (!context) throw new Error('useGrades must be used within a GradesProvider');
+    return context;
+};
+
+
+interface ThemeContextType {
+    theme: Theme;
+    toggleTheme: () => void;
+}
+const ThemeContext = createContext<ThemeContextType | null>(null);
+interface ThemeProviderProps { children: React.ReactNode; }
+const ThemeProvider = ({ children }: ThemeProviderProps) => {
+    const [theme, setTheme] = useState<Theme>('dark');
+    const toggleTheme = useCallback(() => {
+        setTheme(prevTheme => (prevTheme === 'light' ? 'dark' : 'light'));
+    }, []);
+    useEffect(() => {
+        const root = window.document.documentElement;
+        root.classList.remove('light', 'dark');
+        root.classList.add(theme);
+    }, [theme]);
+    const value = useMemo(() => ({ theme, toggleTheme }), [theme, toggleTheme]);
+    return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
+};
+export const useTheme = () => {
+    const context = useContext(ThemeContext);
+    if (!context) throw new Error('useTheme must be used within a ThemeProvider');
+    return context;
+};
+
+interface UserContextType {
+    name: string;
+    profilePic: string | null;
+    setName: (name: string) => void;
+    setProfilePic: (pic: string | null) => void;
+}
+const UserContext = createContext<UserContextType | null>(null);
+interface UserProviderProps { children: React.ReactNode; }
+const UserProvider = ({ children }: UserProviderProps) => {
+    const { currentUser } = useAuth();
+    const [name, setName] = useState(currentUser?.displayName || 'John Doe');
+    const [profilePic, setProfilePic] = useState<string | null>(currentUser?.photoURL || null);
+
+    useEffect(() => {
+        if(currentUser) {
+            setName(currentUser.displayName || 'John Doe');
+            setProfilePic(currentUser.photoURL || null);
+        }
+    }, [currentUser]);
+
+    const value = useMemo(() => ({ name, setName, profilePic, setProfilePic }), [name, profilePic, setName, setProfilePic]);
+    return <UserContext.Provider value={value}>{children}</UserContext.Provider>;
+};
+export const useUser = () => {
+    const context = useContext(UserContext);
+    if (!context) throw new Error('useUser must be used within a UserProvider');
+    return context;
+};
+
+
+// --- LAYOUT & ROUTING ---
+interface ProtectedRouteProps { children: React.ReactNode; }
+const ProtectedRoute = ({ children }: ProtectedRouteProps) => {
+  const { currentUser } = useAuth();
+  return currentUser ? <>{children}</> : <Navigate to="/login" replace />;
+};
+
+const TabBar = () => (
+  <nav className="fixed bottom-0 left-0 right-0 bg-light-surface dark:bg-brand-secondary-dark h-20 border-t border-light-accent/20 dark:border-brand-accent/30 flex justify-around items-center z-50">
+    <NavLink to="/" className={({ isActive }) => `flex flex-col items-center gap-1 ${isActive ? 'text-light-accent dark:text-white' : 'text-light-text-secondary dark:text-brand-accent-light'}`}>
+      <HomeIcon />
+      <span className="text-xs font-medium">Home</span>
+    </NavLink>
+    <NavLink to="/add" className="w-16 h-16 bg-light-accent dark:bg-brand-accent flex items-center justify-center rounded-full -translate-y-6 shadow-lg shadow-black/30 text-white">
+      <PlusIcon size={32} />
+    </NavLink>
+    <NavLink to="/alarm" className={({ isActive }) => `flex flex-col items-center gap-1 ${isActive ? 'text-light-accent dark:text-white' : 'text-light-text-secondary dark:text-brand-accent-light'}`}>
+      <ClockIcon />
+      <span className="text-xs font-medium">Alarm</span>
+    </NavLink>
+  </nav>
+);
+
+const AppLayout = () => {
+  const location = useLocation();
+  const hideTabBarForRoutes = ['/add', '/edit', '/calendar', '/grades', '/degree-calculator', '/theme'];
+  const hideTabBar = hideTabBarForRoutes.some(path => location.pathname.startsWith(path));
+
+  return (
+    <div className="bg-light-bg dark:bg-brand-dark text-light-text dark:text-brand-light min-h-screen font-sans pb-24">
+      <div className="relative z-10">
+        <Outlet />
+      </div>
+      {!hideTabBar && <TabBar />}
+    </div>
+  );
+};
+
+
+const App = () => {
+  return (
+    <AuthProvider>
+      <UserProvider>
+        <ThemeProvider>
+          <EventProvider>
+            <GradesProvider>
+              <HashRouter>
+                <Routes>
+                  <Route path="/login" element={<AuthPage />} />
+                  <Route path="/signup" element={<AuthPage initialMode="signup" />} />
+                  <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
+                    <Route path="/" element={<HomePage />} />
+                    <Route path="/add" element={<AddEventPage />} />
+                    <Route path="/edit/:eventId" element={<AddEventPage />} />
+                    <Route path="/alarm" element={<AlarmPage />} />
+                    <Route path="/profile" element={<ProfilePage />} />
+                    <Route path="/calendar" element={<CalendarPage />} />
+                    <Route path="/grades" element={<GradesPage />} />
+                    <Route path="/degree-calculator" element={<DegreeCalculatorPage />} />
+                  </Route>
+                  <Route path="*" element={<Navigate to="/" replace />} />
+                </Routes>
+              </HashRouter>
+            </GradesProvider>
+          </EventProvider>
+        </ThemeProvider>
+      </UserProvider>
+    </AuthProvider>
+  );
+};
+
+export default App;
