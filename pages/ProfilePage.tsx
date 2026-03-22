@@ -2,10 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useAuth, useUser } from '../App';
 import { useNavigate, Link } from 'react-router-dom';
 import { UserIcon, ChevronLeftIcon } from '../components/Icons';
-import { auth, storage, db } from '../firebase';
-import { signOut, updateProfile } from 'firebase/auth';
-import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
-import { doc, setDoc } from 'firebase/firestore';
+import { supabase } from '../supabase';
 import imageCompression from 'browser-image-compression';
 
 interface ProfileItemProps {
@@ -27,31 +24,9 @@ export const ProfilePage = () => {
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    if (currentUser?.displayName) {
-      setName(currentUser.displayName);
-    }
-    if (currentUser?.photoURL) {
-      setProfilePic(currentUser.photoURL);
-    }
-  }, [currentUser, setName, setProfilePic]);
-
-  const saveToFirestore = async (name?: string, photoURL?: string) => {
-    if (!currentUser) return;
-    try {
-      const userRef = doc(db, "users", currentUser.uid);
-      await setDoc(userRef, {
-        ...(name && { name }),
-        ...(photoURL !== undefined && { photoURL }),
-      }, { merge: true });
-    } catch (error) {
-      console.error("Error saving to Firestore:", error);
-    }
-  };
-
   const handleLogout = async () => {
     try {
-      await signOut(auth);
+      await supabase.auth.signOut();
       navigate('/login');
     } catch (error) {
       console.error("Error signing out: ", error);
@@ -59,13 +34,13 @@ export const ProfilePage = () => {
   };
 
   const handleNameUpdate = async () => {
-    if (currentUser && name.trim() !== '' && name.trim() !== currentUser.displayName) {
+    if (currentUser && name.trim() !== '') {
       try {
-        await updateProfile(currentUser, { displayName: name.trim() });
-        await saveToFirestore(name.trim(), undefined);
+        await supabase.from('profiles').update({ display_name: name.trim() }).eq('id', currentUser.id);
+        // Supabase also stores it in auth metadata
+        await supabase.auth.updateUser({ data: { display_name: name.trim() } });
       } catch (error) {
         console.error("Error updating name:", error);
-        setName(currentUser.displayName || '');
       }
     }
     setIsEditingName(false);
@@ -74,21 +49,27 @@ export const ProfilePage = () => {
   const handleProfilePicChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0] && currentUser) {
       const file = e.target.files[0];
-      const storageRef = ref(storage, `profile-pics/${currentUser.uid}`);
       setUploading(true);
       try {
-        // Compress image before upload
         const compressedFile = await imageCompression(file, {
           maxSizeMB: 0.2,
           maxWidthOrHeight: 300,
           useWebWorker: true
         });
 
-        await uploadBytes(storageRef, compressedFile);
-        const photoURL = await getDownloadURL(storageRef);
-        await updateProfile(currentUser, { photoURL });
-        setProfilePic(photoURL);
-        await saveToFirestore(undefined, photoURL);
+        const filePath = `${currentUser.id}/${Date.now()}`;
+        
+        const { error: uploadError } = await supabase.storage
+          .from('profile-pics')
+          .upload(filePath, compressedFile, { upsert: true });
+          
+        if (uploadError) throw uploadError;
+
+        const { data: { publicUrl } } = supabase.storage.from('profile-pics').getPublicUrl(filePath);
+
+        await supabase.from('profiles').update({ photo_url: publicUrl }).eq('id', currentUser.id);
+        setProfilePic(publicUrl);
+        
       } catch (error) {
         console.error("Error uploading profile picture: ", error);
       } finally {
@@ -99,19 +80,17 @@ export const ProfilePage = () => {
 
   const handleRemoveProfilePic = async () => {
     if (!currentUser) return;
-
-    const storageRef = ref(storage, `profile-pics/${currentUser.uid}`);
     setUploading(true);
     try {
-      await deleteObject(storageRef);
-    } catch (err) {
-      console.warn("Image might not exist in storage:", err);
-    }
-
-    try {
-      await updateProfile(currentUser, { photoURL: null });
+      // Find the old files in the user folder and delete them
+      const { data: files } = await supabase.storage.from('profile-pics').list(currentUser.id);
+      if (files && files.length > 0) {
+        const filePaths = files.map(x => `${currentUser.id}/${x.name}`);
+        await supabase.storage.from('profile-pics').remove(filePaths);
+      }
+      
+      await supabase.from('profiles').update({ photo_url: null }).eq('id', currentUser.id);
       setProfilePic('');
-      await saveToFirestore(undefined, '');
     } catch (error) {
       console.error("Error removing profile picture: ", error);
     } finally {

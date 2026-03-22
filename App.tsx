@@ -1,4 +1,3 @@
-
 import React, { useState, createContext, useContext, useMemo, useCallback, useEffect } from 'react';
 import { HashRouter, Routes, Route, Navigate, Outlet, NavLink, useLocation } from 'react-router-dom';
 import type { Coursework, Grade, Theme } from './types';
@@ -11,10 +10,8 @@ import { CalendarPage } from './pages/CalendarPage';
 import { GradesPage } from './pages/GradesPage';
 import { DegreeCalculatorPage } from './pages/DegreeCalculatorPage';
 import { HomeIcon, PlusIcon, ClockIcon } from './components/Icons';
-import { auth, db } from './firebase'; 
-import { onAuthStateChanged, User } from 'firebase/auth';
-import { collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, query, where, getDocs, orderBy } from 'firebase/firestore';
-
+import { supabase } from './supabase'; 
+import { User, Session } from '@supabase/supabase-js';
 
 // --- CONTEXTS ---
 
@@ -29,11 +26,16 @@ const AuthProvider = ({ children }: AuthProviderProps) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setCurrentUser(user);
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setCurrentUser(session?.user || null);
       setLoading(false);
     });
-    return unsubscribe;
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setCurrentUser(session?.user || null);
+      setLoading(false);
+    });
+    return () => subscription.unsubscribe();
   }, []);
 
   const value = useMemo(() => ({ currentUser, loading }), [currentUser, loading]);
@@ -68,12 +70,31 @@ const EventProvider = ({ children }: EventProviderProps) => {
 
   useEffect(() => {
     if (currentUser) {
-      const q = query(collection(db, 'users', currentUser.uid, 'events'), orderBy('dueDate'));
-      const unsubscribe = onSnapshot(q, (snapshot) => {
-        const eventsData = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Coursework));
-        setEvents(eventsData);
-      });
-      return unsubscribe;
+      const fetchEvents = async () => {
+        const { data, error } = await supabase
+          .from('events')
+          .select('*')
+          .eq('user_id', currentUser.id)
+          .order('due_date', { ascending: true });
+        if (data) {
+          setEvents(data.map((d: any) => ({
+             id: d.id, 
+             subject: d.subject, 
+             title: d.title, 
+             dueDate: d.due_date, 
+             location: d.location, 
+             color: d.color 
+          })));
+        }
+      };
+      fetchEvents();
+
+      const channel = supabase.channel('events_changes')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'events', filter: `user_id=eq.${currentUser.id}` }, payload => {
+          fetchEvents();
+        }).subscribe();
+        
+      return () => { supabase.removeChannel(channel); };
     } else {
       setEvents([]);
     }
@@ -82,19 +103,28 @@ const EventProvider = ({ children }: EventProviderProps) => {
   const addEvent = useCallback(async (event: Omit<Coursework, 'id' | 'color'>) => {
     if (!currentUser) return;
     const colors = ['bg-blue-400/20 border-blue-400', 'bg-purple-400/20 border-purple-400', 'bg-green-400/20 border-green-400', 'bg-teal-400/20 border-teal-400', 'bg-indigo-400/20 border-indigo-400'];
-    const newEvent = { ...event, color: colors[Math.floor(Math.random() * colors.length)] };
-    await addDoc(collection(db, 'users', currentUser.uid, 'events'), newEvent);
+    const newEvent = { 
+       user_id: currentUser.id,
+       subject: event.subject,
+       title: event.title,
+       due_date: event.dueDate,
+       location: event.location,
+       color: colors[Math.floor(Math.random() * colors.length)] 
+    };
+    await supabase.from('events').insert([newEvent]);
   }, [currentUser]);
 
   const updateEvent = useCallback(async (updatedEvent: Coursework) => {
     if (!currentUser) return;
-    const { id, ...eventData } = updatedEvent;
-    await updateDoc(doc(db, 'users', currentUser.uid, 'events', id), eventData);
+    const { id, subject, title, dueDate, location, color } = updatedEvent;
+    await supabase.from('events').update({
+       subject, title, due_date: dueDate, location, color
+    }).eq('id', id);
   }, [currentUser]);
 
   const deleteEvent = useCallback(async (eventId: string) => {
     if (!currentUser) return;
-    await deleteDoc(doc(db, 'users', currentUser.uid, 'events', eventId));
+    await supabase.from('events').delete().eq('id', eventId);
   }, [currentUser]);
 
   const value = useMemo(() => ({ events, addEvent, updateEvent, deleteEvent }), [events, addEvent, updateEvent, deleteEvent]);
@@ -121,12 +151,21 @@ const GradesProvider = ({ children }: GradesProviderProps) => {
 
     useEffect(() => {
         if (currentUser) {
-            const q = query(collection(db, 'users', currentUser.uid, 'grades'), orderBy('moduleName'));
-            const unsubscribe = onSnapshot(q, (snapshot) => {
-                const gradesData = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Grade));
-                setGrades(gradesData);
-            });
-            return unsubscribe;
+            const fetchGrades = async () => {
+               const { data } = await supabase.from('grades')
+                 .select('*').eq('user_id', currentUser.id).order('module_name');
+               if (data) {
+                  setGrades(data.map((d: any) => ({ id: d.id, moduleName: d.module_name, marks: d.marks })));
+               }
+            };
+            fetchGrades();
+
+            const channel = supabase.channel('grades_changes')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'grades', filter: `user_id=eq.${currentUser.id}` }, payload => {
+              fetchGrades();
+            }).subscribe();
+            
+            return () => { supabase.removeChannel(channel); };
         } else {
             setGrades([]);
         }
@@ -134,37 +173,35 @@ const GradesProvider = ({ children }: GradesProviderProps) => {
 
     const addGrade = useCallback(async (grade: Omit<Grade, 'id'>) => {
         if (!currentUser) return;
-        await addDoc(collection(db, 'users', currentUser.uid, 'grades'), grade);
+        await supabase.from('grades').insert([{ user_id: currentUser.id, module_name: grade.moduleName, marks: grade.marks }]);
     }, [currentUser]);
 
     const upsertGrade = useCallback(async (gradeData: { moduleName: string; marks: number }) => {
         if (!currentUser || !gradeData.moduleName.trim()) return;
-
-        const gradesCol = collection(db, 'users', currentUser.uid, 'grades');
-        const q = query(gradesCol, where("moduleName", "==", gradeData.moduleName.trim()));
-        const querySnapshot = await getDocs(q);
-
-        if (querySnapshot.empty) {
-            await addDoc(gradesCol, gradeData);
+        
+        const { data } = await supabase.from('grades')
+           .select('*').eq('user_id', currentUser.id).eq('module_name', gradeData.moduleName.trim());
+           
+        if (!data || data.length === 0) {
+           await supabase.from('grades').insert([{ user_id: currentUser.id, module_name: gradeData.moduleName.trim(), marks: gradeData.marks }]);
         } else {
-            const docToUpdate = querySnapshot.docs[0];
-            if (docToUpdate.data().marks !== gradeData.marks) {
-               await updateDoc(doc(db, 'users', currentUser.uid, 'grades', docToUpdate.id), { marks: gradeData.marks });
-            }
+           const docToUpdate = data[0];
+           if (docToUpdate.marks !== gradeData.marks) {
+               await supabase.from('grades').update({ marks: gradeData.marks }).eq('id', docToUpdate.id);
+           }
         }
     }, [currentUser]);
 
     const updateGrade = useCallback(async (updatedGrade: Grade) => {
         if (!currentUser) return;
-        const { id, ...gradeData } = updatedGrade;
-        await updateDoc(doc(db, 'users', currentUser.uid, 'grades', id), gradeData);
+        const { id, moduleName, marks } = updatedGrade;
+        await supabase.from('grades').update({ module_name: moduleName, marks }).eq('id', id);
     }, [currentUser]);
 
     const deleteGrade = useCallback(async (id: string) => {
         if (!currentUser) return;
-        await deleteDoc(doc(db, 'users', currentUser.uid, 'grades', id));
+        await supabase.from('grades').delete().eq('id', id);
     }, [currentUser]);
-
 
     const value = useMemo(() => ({ grades, addGrade, upsertGrade, updateGrade, deleteGrade }), [grades, addGrade, upsertGrade, updateGrade, deleteGrade]);
     return <GradesContext.Provider value={value}>{children}</GradesContext.Provider>;
@@ -174,7 +211,6 @@ export const useGrades = () => {
     if (!context) throw new Error('useGrades must be used within a GradesProvider');
     return context;
 };
-
 
 interface ThemeContextType {
     theme: Theme;
@@ -211,13 +247,19 @@ const UserContext = createContext<UserContextType | null>(null);
 interface UserProviderProps { children: React.ReactNode; }
 const UserProvider = ({ children }: UserProviderProps) => {
     const { currentUser } = useAuth();
-    const [name, setName] = useState(currentUser?.displayName || 'John Doe');
-    const [profilePic, setProfilePic] = useState<string | null>(currentUser?.photoURL || null);
+    const [name, setName] = useState(currentUser?.user_metadata?.display_name || 'John Doe');
+    const [profilePic, setProfilePic] = useState<string | null>(null);
 
     useEffect(() => {
         if(currentUser) {
-            setName(currentUser.displayName || 'John Doe');
-            setProfilePic(currentUser.photoURL || null);
+            const fetchProfile = async () => {
+               const { data } = await supabase.from('profiles').select('*').eq('id', currentUser.id).single();
+               if (data) {
+                  setName(data.display_name || 'John Doe');
+                  setProfilePic(data.photo_url || null);
+               }
+            };
+            fetchProfile();
         }
     }, [currentUser]);
 
@@ -229,7 +271,6 @@ export const useUser = () => {
     if (!context) throw new Error('useUser must be used within a UserProvider');
     return context;
 };
-
 
 // --- LAYOUT & ROUTING ---
 interface ProtectedRouteProps { children: React.ReactNode; }
@@ -268,7 +309,6 @@ const AppLayout = () => {
     </div>
   );
 };
-
 
 const App = () => {
   return (

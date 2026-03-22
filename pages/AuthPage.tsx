@@ -1,17 +1,7 @@
 import React, { useState } from 'react';
 import { useAuth } from '../App';
 import { Navigate } from 'react-router-dom';
-import { auth, db } from '../firebase';
-import {
-  createUserWithEmailAndPassword,
-  signInWithEmailAndPassword,
-  updateProfile
-} from 'firebase/auth';
-import {
-  doc,
-  getDoc,
-  setDoc
-} from 'firebase/firestore';
+import { supabase } from '../supabase';
 
 type AuthMode = 'login' | 'signup';
 
@@ -35,8 +25,6 @@ export const AuthPage = ({ initialMode = 'login' }: AuthPageProps) => {
     setError('');
 
     try {
-      let userCredential;
-
       if (mode === 'signup') {
         if (!name) {
           setError('Please enter your name.');
@@ -44,31 +32,25 @@ export const AuthPage = ({ initialMode = 'login' }: AuthPageProps) => {
           return;
         }
 
-        userCredential = await createUserWithEmailAndPassword(auth, email, password);
-
-        if (auth.currentUser) {
-          await updateProfile(auth.currentUser, { displayName: name });
-        }
-      } else {
-        userCredential = await signInWithEmailAndPassword(auth, email, password);
-      }
-
-      const user = userCredential.user;
-
-      // 🔥 Ensure /users/{uid} exists
-      const userDocRef = doc(db, 'users', user.uid);
-      const docSnap = await getDoc(userDocRef);
-
-      if (!docSnap.exists()) {
-        await setDoc(userDocRef, {
-          displayName: user.displayName || name,
-          email: user.email,
-          createdAt: new Date().toISOString()
+        const { error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: {
+              display_name: name,
+            }
+          }
         });
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
+        if (error) throw error;
       }
-
     } catch (err: any) {
-      setError(err.message.replace('Firebase: ', ''));
+      setError(err.message || 'An error occurred.');
     } finally {
       setLoading(false);
     }
