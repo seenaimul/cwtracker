@@ -4,7 +4,7 @@ This project demonstrates the usage of [React](https://react.dev/), [Vite](https
 
 ## Demo
 
-*([Live Demo is available at: ](https://examcwtracker.netlify.app/#/login))*
+*([CWTracker Live Demo](https://examcwtracker.netlify.app/#/login))*
 
 ## Overview
 
