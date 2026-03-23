@@ -3,6 +3,81 @@ import React, { useState, useEffect, useRef } from 'react';
 import { PlayIcon, PauseIcon, RefreshCwIcon } from '../components/Icons';
 import { Alarm, DayOfWeek } from '../types';
 
+export type ToneType = 'scary' | 'gentle' | 'digital';
+
+export const AudioEngine = {
+    ctx: null as AudioContext | null,
+    loopInterval: null as any,
+    
+    init() {
+        try {
+            if (!this.ctx) {
+                const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+                if (Ctx) this.ctx = new Ctx();
+            }
+            if (this.ctx && this.ctx.state === 'suspended') {
+                this.ctx.resume();
+            }
+        } catch(e) {}
+    },
+    
+    stopLoop() {
+        if (this.loopInterval) clearInterval(this.loopInterval);
+        this.loopInterval = null;
+    },
+    
+    playLoop(tone: ToneType = 'gentle') {
+        this.stopLoop();
+        this.playOneShot(tone);
+        this.loopInterval = setInterval(() => this.playOneShot(tone), tone === 'scary' ? 400 : 1200);
+    },
+
+    playOneShot(tone: ToneType = 'gentle') {
+        this.init();
+        if (!this.ctx) return;
+        try {
+            const ctx = this.ctx;
+            if (tone === 'gentle') {
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(880, ctx.currentTime);
+                gain.gain.setValueAtTime(0, ctx.currentTime);
+                gain.gain.linearRampToValueAtTime(0.5, ctx.currentTime + 0.05);
+                gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.2);
+                osc.start(ctx.currentTime);
+                osc.stop(ctx.currentTime + 1.2);
+            } else if (tone === 'digital') {
+                for (let i = 0; i < 2; i++) {
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    osc.connect(gain);
+                    gain.connect(ctx.destination);
+                    osc.type = 'square';
+                    osc.frequency.setValueAtTime(600, ctx.currentTime + i * 0.15);
+                    gain.gain.setValueAtTime(0, ctx.currentTime + i * 0.15);
+                    gain.gain.setValueAtTime(0.1, ctx.currentTime + i * 0.15 + 0.01);
+                    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.15 + 0.1);
+                    osc.start(ctx.currentTime + i * 0.15);
+                    osc.stop(ctx.currentTime + i * 0.15 + 0.1);
+                }
+            } else {
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(900, ctx.currentTime);
+                gain.gain.setValueAtTime(0.3, ctx.currentTime);
+                osc.start(ctx.currentTime);
+                osc.stop(ctx.currentTime + 0.3);
+            }
+        } catch(e) {}
+    }
+};
+
 type Tab = 'ALARM' | 'STOPWATCH' | 'POMODORO';
 type ClockType = 'analog-numbered' | 'analog-ticked' | 'digital';
 
@@ -116,9 +191,73 @@ const DigitalClock = () => {
 const WEEK_DAYS: DayOfWeek[] = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 const AlarmManager = () => {
-    const [alarms, setAlarms] = useState<Alarm[]>([]);
+    const [alarms, setAlarms] = useState<Alarm[]>(() => {
+        try {
+            const saved = localStorage.getItem('alarms');
+            return saved ? JSON.parse(saved) : [];
+        } catch { return []; }
+    });
+    
+    useEffect(() => {
+        localStorage.setItem('alarms', JSON.stringify(alarms));
+    }, [alarms]);
+    
+    const [lastTriggeredMinute, setLastTriggeredMinute] = useState<string>('');
+    const [ringingAlarms, setRingingAlarms] = useState<Alarm[]>([]);
+
+    // Unlock Web Audio API on first user interaction bypass
+    useEffect(() => {
+        const unlockAudio = () => AudioEngine.init();
+        document.addEventListener('click', unlockAudio, { once: true });
+        return () => document.removeEventListener('click', unlockAudio);
+    }, []);
+
+    const stopAlarmSound = () => {
+        AudioEngine.stopLoop();
+        setRingingAlarms([]);
+    };
+
+    const playAlarmSound = () => {
+        AudioEngine.playLoop(window.localStorage.getItem('alert_tone') as ToneType || 'gentle');
+        setTimeout(stopAlarmSound, 60000); // auto-stop after 1 minute
+    };
+    
+    useEffect(() => {
+        const interval = setInterval(() => {
+            const now = new Date();
+            const format2 = (n: number) => n.toString().padStart(2, '0');
+            const currentTime = `${format2(now.getHours())}:${format2(now.getMinutes())}`;
+            const currentDate = `${now.getFullYear()}-${format2(now.getMonth() + 1)}-${format2(now.getDate())}`;
+            const currentDay = WEEK_DAYS[now.getDay()];
+
+            if (currentTime !== lastTriggeredMinute) {
+                const triggeredAlarms = alarms.filter(alarm => {
+                    if (!alarm.enabled) return false;
+                    if (alarm.time === currentTime) {
+                        return alarm.repeat.length > 0 ? alarm.repeat.includes(currentDay) : alarm.date === currentDate;
+                    }
+                    return false;
+                });
+
+                if (triggeredAlarms.length > 0) {
+                    setLastTriggeredMinute(currentTime);
+                    setRingingAlarms(triggeredAlarms);
+                    playAlarmSound();
+
+                    // Disable one-time alarms that just triggered
+                    setAlarms(prev => prev.map(a => triggeredAlarms.some(ta => ta.id === a.id) && a.repeat.length === 0 ? { ...a, enabled: false } : a));
+                }
+            }
+        }, 1000);
+        return () => clearInterval(interval);
+    }, [alarms, lastTriggeredMinute]);
+
     const [newAlarmTime, setNewAlarmTime] = useState('08:00');
-    const [newAlarmDate, setNewAlarmDate] = useState(new Date().toISOString().split('T')[0]);
+    const getLocalYYYYMMDD = () => {
+        const d = new Date();
+        return `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`;
+    };
+    const [newAlarmDate, setNewAlarmDate] = useState(getLocalYYYYMMDD());
     const [newAlarmLabel, setNewAlarmLabel] = useState('');
     const [repeatDays, setRepeatDays] = useState<Set<DayOfWeek>>(new Set());
     const [clockType, setClockType] = useState<ClockType>('analog-numbered');
@@ -178,6 +317,27 @@ const AlarmManager = () => {
                     </button>
                 ))}
             </div>
+
+            {ringingAlarms.length > 0 && (
+                <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+                    <div className="bg-light-surface dark:bg-brand-secondary-dark p-8 rounded-2xl shadow-2xl flex flex-col items-center text-center animate-bounce">
+                        <div className="text-red-500 mb-4 animate-pulse">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="13" r="8"></circle><path d="M12 9v4l2 2"></path><path d="M5 3L2 6"></path><path d="M22 6l-3-3"></path><path d="M6.38 18.7L4 21"></path><path d="M17.64 18.67L20 21"></path></svg>
+                        </div>
+                        <h2 className="text-3xl font-bold text-light-text dark:text-white mb-2">Alarm!</h2>
+                        <ul className="text-xl text-light-text-secondary dark:text-brand-accent-light mb-8 font-medium">
+                            {ringingAlarms.map(a => <li key={a.id}>{a.label || 'Alarm'} ({a.time})</li>)}
+                        </ul>
+                        <button 
+                            onClick={stopAlarmSound}
+                            className="bg-red-500 hover:bg-red-600 text-white text-xl font-bold py-4 px-12 rounded-full shadow-lg transition-transform hover:scale-105 active:scale-95"
+                        >
+                            STOP
+                        </button>
+                    </div>
+                </div>
+            )}
+
             <form onSubmit={addAlarm} className="mb-4 space-y-3 p-4 bg-light-surface dark:bg-brand-secondary-dark/70 rounded-lg">
                 <h3 className="text-lg font-semibold text-light-text dark:text-white">Set New Alarm</h3>
                 <div className="flex gap-2">
@@ -197,7 +357,7 @@ const AlarmManager = () => {
                 </div>
                 <button type="submit" className="w-full py-2 rounded-lg bg-light-accent dark:bg-brand-accent text-white font-semibold">Add Alarm</button>
             </form>
-            <div className="flex-grow space-y-2 overflow-y-auto pb-16">
+            <div className="flex-grow space-y-2 w-full">
                 {alarms.map(alarm => (
                     <div key={alarm.id} className={`p-3 rounded-lg flex justify-between items-center ${alarm.enabled ? 'bg-light-surface dark:bg-brand-secondary-dark' : 'bg-gray-200 dark:bg-brand-secondary-dark/50'}`}>
                         <div>
@@ -304,6 +464,7 @@ const Pomodoro = () => {
                 setSessionType('FOCUS');
                 setTimer(focusDuration * 60);
             }
+            AudioEngine.playOneShot(window.localStorage.getItem('alert_tone') as ToneType || 'gentle');
             startTimer(); // auto-start next session
         }
     }, [timer, sessionType, breakDuration, focusDuration]);
@@ -363,10 +524,30 @@ const Pomodoro = () => {
 
 export const AlarmPage = () => {
     const [activeTab, setActiveTab] = useState<Tab>('ALARM');
+    const [tone, setTone] = useState<ToneType>(() => window.localStorage.getItem('alert_tone') as ToneType || 'gentle');
+
+    const handleToneChange = (newTone: ToneType) => {
+        setTone(newTone);
+        window.localStorage.setItem('alert_tone', newTone);
+        AudioEngine.playOneShot(newTone);
+    };
 
     return (
-        <div className="p-4 flex flex-col items-center h-screen justify-start">
-            <div className="flex justify-center p-1 rounded-lg bg-light-surface dark:bg-brand-secondary-dark w-full max-w-sm my-8">
+        <div className="p-4 flex flex-col items-center min-h-[calc(100vh-5rem)] pb-24">
+            <div className="flex justify-between w-full max-w-sm mt-4 items-center">
+                <span className="text-light-text-secondary dark:text-brand-accent-light text-sm font-semibold">Alert Tone</span>
+                <select 
+                    value={tone}
+                    onChange={(e) => handleToneChange(e.target.value as ToneType)}
+                    className="bg-light-surface dark:bg-brand-secondary-dark text-sm text-light-text dark:text-white p-2 rounded-md border border-light-accent dark:border-brand-accent focus:outline-none cursor-pointer"
+                >
+                    <option value="gentle">Gentle Chime</option>
+                    <option value="digital">Digital Pulse</option>
+                    <option value="scary">Classic Beep</option>
+                </select>
+            </div>
+
+            <div className="flex justify-center p-1 rounded-lg bg-light-surface dark:bg-brand-secondary-dark w-full max-w-sm mt-4 mb-8">
                 <button
                     onClick={() => setActiveTab('ALARM')}
                     className={`w-1/3 py-2 text-sm font-semibold rounded-md transition-colors ${activeTab === 'ALARM' ? 'bg-light-accent dark:bg-brand-accent text-white' : 'text-light-text-secondary dark:text-brand-accent-light'}`}

@@ -111,7 +111,18 @@ const EventProvider = ({ children }: EventProviderProps) => {
        location: event.location,
        color: colors[Math.floor(Math.random() * colors.length)] 
     };
-    await supabase.from('events').insert([newEvent]);
+    const { data } = await supabase.from('events').insert([newEvent]).select();
+    if (data && data[0]) {
+       const mappedEvent = {
+         id: data[0].id, 
+         subject: data[0].subject, 
+         title: data[0].title, 
+         dueDate: data[0].due_date, 
+         location: data[0].location, 
+         color: data[0].color 
+       };
+       setEvents(prev => [...prev, mappedEvent].sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime()));
+    }
   }, [currentUser]);
 
   const updateEvent = useCallback(async (updatedEvent: Coursework) => {
@@ -120,11 +131,13 @@ const EventProvider = ({ children }: EventProviderProps) => {
     await supabase.from('events').update({
        subject, title, due_date: dueDate, location, color
     }).eq('id', id);
+    setEvents(prev => prev.map(e => e.id === id ? updatedEvent : e).sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime()));
   }, [currentUser]);
 
   const deleteEvent = useCallback(async (eventId: string) => {
     if (!currentUser) return;
     await supabase.from('events').delete().eq('id', eventId);
+    setEvents(prev => prev.filter(e => e.id !== eventId));
   }, [currentUser]);
 
   const value = useMemo(() => ({ events, addEvent, updateEvent, deleteEvent }), [events, addEvent, updateEvent, deleteEvent]);
@@ -173,7 +186,10 @@ const GradesProvider = ({ children }: GradesProviderProps) => {
 
     const addGrade = useCallback(async (grade: Omit<Grade, 'id'>) => {
         if (!currentUser) return;
-        await supabase.from('grades').insert([{ user_id: currentUser.id, module_name: grade.moduleName, marks: grade.marks }]);
+        const { data } = await supabase.from('grades').insert([{ user_id: currentUser.id, module_name: grade.moduleName, marks: grade.marks }]).select();
+        if (data && data[0]) {
+            setGrades(prev => [...prev, { id: data[0].id, moduleName: data[0].module_name, marks: data[0].marks }]);
+        }
     }, [currentUser]);
 
     const upsertGrade = useCallback(async (gradeData: { moduleName: string; marks: number }) => {
@@ -183,11 +199,15 @@ const GradesProvider = ({ children }: GradesProviderProps) => {
            .select('*').eq('user_id', currentUser.id).eq('module_name', gradeData.moduleName.trim());
            
         if (!data || data.length === 0) {
-           await supabase.from('grades').insert([{ user_id: currentUser.id, module_name: gradeData.moduleName.trim(), marks: gradeData.marks }]);
+           const { data: newData } = await supabase.from('grades').insert([{ user_id: currentUser.id, module_name: gradeData.moduleName.trim(), marks: gradeData.marks }]).select();
+           if (newData && newData[0]) {
+               setGrades(prev => [...prev, { id: newData[0].id, moduleName: newData[0].module_name, marks: newData[0].marks }]);
+           }
         } else {
            const docToUpdate = data[0];
            if (docToUpdate.marks !== gradeData.marks) {
                await supabase.from('grades').update({ marks: gradeData.marks }).eq('id', docToUpdate.id);
+               setGrades(prev => prev.map(g => g.id === docToUpdate.id ? { ...g, marks: gradeData.marks } : g));
            }
         }
     }, [currentUser]);
@@ -196,11 +216,13 @@ const GradesProvider = ({ children }: GradesProviderProps) => {
         if (!currentUser) return;
         const { id, moduleName, marks } = updatedGrade;
         await supabase.from('grades').update({ module_name: moduleName, marks }).eq('id', id);
+        setGrades(prev => prev.map(g => g.id === id ? updatedGrade : g));
     }, [currentUser]);
 
     const deleteGrade = useCallback(async (id: string) => {
         if (!currentUser) return;
         await supabase.from('grades').delete().eq('id', id);
+        setGrades(prev => prev.filter(g => g.id !== id));
     }, [currentUser]);
 
     const value = useMemo(() => ({ grades, addGrade, upsertGrade, updateGrade, deleteGrade }), [grades, addGrade, upsertGrade, updateGrade, deleteGrade]);
