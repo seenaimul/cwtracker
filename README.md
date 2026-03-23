@@ -4,7 +4,7 @@ This project demonstrates the usage of [React](https://react.dev/), [Vite](https
 
 ## Demo
 
-*([Live Demo](https://examcwtracker.netlify.app/#/login))*
+*([Live Demo is available at: ](https://examcwtracker.netlify.app/#/login))*
 
 ## Overview
 
@@ -22,7 +22,7 @@ This project is the CWTracker application built to track coursework and exams, m
 ### Decisions and Considerations
 
 - **Supabase Integration**: Supabase was chosen for its powerful backend features, including rapid authentication setup, real-time Postgres changes, and simple database management.
-- **Netlify Deployment**: Netlify was selected for deployment due to its simplicity, seamless CI/CD integration with GitHub, and excellent support for modern frontend frameworks like React.
+- **Netlify Deployment**: Netlify was selected for deployment due to its simplicity, seamless CI/CD integration with GitHub, and excellent support for modern frontend frameworks like React, and the integratation between GitHub, Supabase and Netlify.
 
 This application serves as a practical example for developers to learn how to build full-stack React applications deployed via Netlify and powered by Supabase.
 
@@ -44,14 +44,22 @@ This application serves as a practical example for developers to learn how to bu
 2. Run the migrations available in the `supabase_setup.sql` file through your project's Supabase SQL Editor to set up your database schema (which creates the `events`, `grades`, and `profiles` tables, alongside their Row Level Security policies). For instructions on how to do this, see [here](https://supabase.com/docs/guides/database/overview#the-sql-editor).
 3. Retrieve your project's Database API credentials. Go to Project Settings (the cog icon), open the API tab, and find your API `URL` and `anon` key.
 
+   ![Supabase Configuration](images/image1.png)
+
 ### Netlify Deployment
 
 1. Formally verify your GitHub repository is updated with the latest code.
-2. Sign in to [Netlify](https://app.netlify.com/) and go to your team dashboard.
-3. Click on **Add new site** -> **Import an existing project**.
+2. Sign in to [Netlify](https://app.netlify.com/) and go to your team Projects dashboard.
+3. Click on **Add new project** -> **Import a Git repository**.
 4. Choose **GitHub** as your Git provider and authorize Netlify.
+
+   ![Netlify GitHub Auth](images/image2.png)
 5. Select your `cwtracker` repository.
+
+   ![Netlify Repo Select](images/image3.png)
 6. In the build settings configure the following:
+-  **Project name**: `cwtracker` to determine the URL of the deployed site. (e.g. `https://examcwtracker.netlify.app/#/login`)
+- **Branch to deploy**: `main` or change it to your preferred branch.
    - **Base directory**: *(leave empty)*
    - **Build command**: `npm run build`
    - **Publish directory**: `dist`
@@ -59,6 +67,8 @@ This application serves as a practical example for developers to learn how to bu
    - `VITE_SUPABASE_URL`: Your Supabase URL.
    - `VITE_SUPABASE_ANON_KEY`: Your Supabase anon key.
 8. Click **Deploy site**.
+
+   ![Netlify Deploy](images/image4.png)
 
 Netlify will now build and deploy the application. Any Pull Request raised on GitHub will have a preview environment generated automatically by Netlify, and these will interact with your single Supabase database instance.
 
